@@ -1,32 +1,152 @@
 import express from "express";
-import mongoose from "mongoose";
 import { generateAd } from "./utils/adUtils.js";
-
-// Import models
-
-import Campaign from "./models/Campaign.js";
-import Strategy from "./models/Strategy.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const MONGODB_URI =
-  process.env.MONGODB_URI || "mongodb://localhost:27017/adserver";
 
 app.use(express.json());
 
-// Connect to MongoDB
-mongoose
-  .connect(MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
-  .then(() => console.log("Connected to MongoDB"))
-  .catch((err) => console.error("Error connecting to MongoDB:", err));
+// In-memory storage to replace MongoDB
+const campaigns = new Map();
+const strategies = new Map();
+
+// Mock data structure to simulate MongoDB documents
+class Campaign {
+  constructor(data) {
+    this._id = data._id || Math.random().toString(36).substr(2, 9);
+    this.campaignId = data.campaignId;
+    this.name = data.name;
+    this.budget = data.budget;
+    this.status = data.status || 'active';
+    this.createdAt = data.createdAt || new Date();
+  }
+
+  static findOne() {
+    const campaignArray = Array.from(campaigns.values());
+    if (campaignArray.length === 0) {
+      // Create a default campaign if none exists
+      const defaultCampaign = new Campaign({
+        campaignId: 'default-campaign-1',
+        name: 'Default Campaign',
+        budget: 1000,
+        status: 'active'
+      });
+      campaigns.set(defaultCampaign._id, defaultCampaign);
+      return Promise.resolve(defaultCampaign);
+    }
+    // Sort by createdAt and return the latest
+    const sorted = campaignArray.sort((a, b) => b.createdAt - a.createdAt);
+    return Promise.resolve(sorted[0]);
+  }
+}
+
+class Strategy {
+  constructor(data) {
+    this._id = data._id || Math.random().toString(36).substr(2, 9);
+    this.strategyId = data.strategyId;
+    this.campaignId = data.campaignId;
+    this.name = data.name;
+    this.currentBid = data.currentBid || 1.0;
+    this.metrics = data.metrics || {
+      impressions: 0,
+      clicks: 0,
+      conversions: 0,
+      spend: 0
+    };
+    this.createdAt = data.createdAt || new Date();
+  }
+
+  static findOne(query) {
+    const strategyArray = Array.from(strategies.values());
+    if (strategyArray.length === 0 && query.campaignId) {
+      // Create a default strategy if none exists
+      const defaultStrategy = new Strategy({
+        strategyId: 'default-strategy-1',
+        campaignId: query.campaignId,
+        name: 'Default Strategy',
+        currentBid: 1.0
+      });
+      strategies.set(defaultStrategy._id, defaultStrategy);
+      return Promise.resolve(defaultStrategy);
+    }
+    
+    const filtered = strategyArray.filter(strategy => {
+      return Object.keys(query).every(key => strategy[key] === query[key]);
+    });
+    
+    if (filtered.length === 0) return Promise.resolve(null);
+    
+    // Sort by createdAt and return the latest
+    const sorted = filtered.sort((a, b) => b.createdAt - a.createdAt);
+    return Promise.resolve(sorted[0]);
+  }
+
+  static findByIdAndUpdate(id, update) {
+    const strategy = strategies.get(id);
+    if (!strategy) return Promise.resolve(null);
+
+    if (update.$inc) {
+      Object.keys(update.$inc).forEach(path => {
+        const keys = path.split('.');
+        let obj = strategy;
+        for (let i = 0; i < keys.length - 1; i++) {
+          obj = obj[keys[i]];
+        }
+        obj[keys[keys.length - 1]] += update.$inc[path];
+      });
+    }
+
+    strategies.set(id, strategy);
+    return Promise.resolve(strategy);
+  }
+
+  static findOneAndUpdate(query, update, options = {}) {
+    const strategyArray = Array.from(strategies.values());
+    const strategy = strategyArray.find(s => {
+      return Object.keys(query).every(key => s[key] === query[key]);
+    });
+
+    if (!strategy) return Promise.resolve(null);
+
+    if (update.$inc) {
+      Object.keys(update.$inc).forEach(path => {
+        const keys = path.split('.');
+        let obj = strategy;
+        for (let i = 0; i < keys.length - 1; i++) {
+          obj = obj[keys[i]];
+        }
+        obj[keys[keys.length - 1]] += update.$inc[path];
+      });
+    }
+
+    if (update.$set) {
+      Object.keys(update.$set).forEach(key => {
+        strategy[key] = update.$set[key];
+      });
+    }
+
+    strategies.set(strategy._id, strategy);
+    return Promise.resolve(options.new ? strategy : strategy);
+  }
+
+  static find(query) {
+    const strategyArray = Array.from(strategies.values());
+    const filtered = strategyArray.filter(strategy => {
+      return Object.keys(query).every(key => strategy[key] === query[key]);
+    });
+    return Promise.resolve(filtered);
+  }
+}
+
+console.log("Using in-memory storage (MongoDB replacement)");
 
 // Serve an ad
 app.get("/serve-ad", async (req, res) => {
   try {
-    const campaign = await Campaign.findOne().sort({ createdAt: -1 });
+    const campaign = await Campaign.findOne();
     const strategy = await Strategy.findOne({
       campaignId: campaign.campaignId,
-    }).sort({ createdAt: -1 });
+    });
 
     if (!campaign || !strategy) {
       return res.status(404).json({ error: "No campaign or strategy found" });
@@ -140,8 +260,5 @@ app.listen(PORT, () => {
 // Graceful shutdown
 process.on("SIGTERM", () => {
   console.log("SIGTERM signal received: closing HTTP server");
-  mongoose.connection.close(false, () => {
-    console.log("MongoDB connection closed");
-    process.exit(0);
-  });
+  process.exit(0);
 });
